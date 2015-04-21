@@ -52,18 +52,73 @@ SOCK_FD Setup()
 
 	LOG::LogHint("server listen on %s : %d", SERVER_IP, LISTEN_PORT);
 
+	//安装捕获子进程终止信号
+	if( SIG_ERR == signal(SIGCHLD, ChildTerminate) )
+	{
+		LOG::LogErr("[Setup] setup SIGCHLD failed!");
+		CloseFD(nListenFd);
+
+		exit(FAILED);
+	}
+
 	PID pid = fork();
 	if( FAILED == pid )
 	{
-		
-	}
-	if( 0 == pid )//child process
+		LOG::LogErr("[Setup] create process failed! reason:%s", strerror(errno) );
+		CloseFD( nListenFd );
+
+		exit( FAILED );
+	}else if( 0 == pid )
 	{
-		
-	}
+		CloseFD( nListenFd );//关闭子进程中的监听描述符的copy	
 	
+		//TODO:
+		LOG::LogHint("child process running!");
+
+		exit(1);
+	}
+
+
+	//TODO:
+	sleep(1000);
+	s8 chInput[32] = {0};
+	do{
+		printf("Enter your command:");
+		s8 chInput[32] = {0};
+		fgets(chInput, sizeof(chInput), stdin);
+
+		if( 0 == strcmp(chInput, "quit\n") )
+		{
+			break;
+		}else if( 0 == strcmp(chInput, "debug\n") )
+		{
+			LOG::LogHint("you input debug!");
+		}else{
+			LOG::LogErr("unrecognize command! command=%s", chInput);
+		}
+	}while(true);
+	
+	pid_t child_pid = -1;	
+	while( 0 == (child_pid = waitpid( -1, NULL, WNOHANG )) )
+	{
+		LOG::LogHint("[Setup] child_%d terminate!", child_pid);
+	}
+
+	CloseFD(nListenFd);
 	
 	return nListenFd;
+}
+
+
+//子进程终止处理
+void ChildTerminate(int sig)
+{
+	pid_t pid = -1;
+	
+	while( 0 == (pid = waitpid( -1, NULL, WNOHANG )) )
+	{
+		LOG::LogHint("[ChildTerminate] child_%d terminate!", pid);
+	}
 }
 
 BOOL CloseFD(SOCK_FD fd)

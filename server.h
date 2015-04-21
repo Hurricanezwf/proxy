@@ -8,13 +8,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/wait.h>
 #include "log.h"
 
 #define		SOCK_FD		s32
 
-#define		SERVER_IP		"172.16.73.100"
+#define		SERVER_IP		"127.0.0.1"
 #define		LISTEN_PORT		9000
 
+#define 	MAX_BACKLOG		10
 
 
 
@@ -25,6 +27,6 @@
 
 SOCK_FD Setup();
 BOOL CloseFD(SOCK_FD fd);
-
+void ChildTerminate(int sig);
 
 #endif	//SERVER_H_

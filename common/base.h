@@ -14,14 +14,16 @@
 
 
 #define		FAILED		-1
-
+#define     TRUE        true
+#define     FALSE       false
 #define		PID			pid_t
+
+
 
 typedef     bool                BOOL;
 typedef		char				s8;
 typedef     unsigned char       u8;
 typedef     int                 s32;
 typedef     unsigned int        u32;
-
 
 #endif  //BASE_H_

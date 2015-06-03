@@ -38,7 +38,7 @@ int main(int argc, char* argv[])
 		fgets( chWriteBuf, 256, stdin );
 	}while( 0 == strcmp(chWriteBuf,"quit") );
 	*/
-	write(nConFd, chWriteBuf,strlen(chWriteBuf)+1);
+	//write(nConFd, chWriteBuf,strlen(chWriteBuf)+1);
 
 	close( nConFd );
 

@@ -11,6 +11,9 @@
 #include <sys/wait.h>
 #include <pthread.h>
 #include <set>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include "base.h"
 #include "log.h"
 
@@ -20,9 +23,18 @@
 #define		LISTEN_PORT		9000
 #define 	MAX_BACKLOG		10
 
-
+#define     SHM_NAME        "/shm_zwf"
 
 typedef void (*TResourceClear)();
+
+
+
+
+typedef struct {
+    BOOL bAccepting;
+}TShared;
+
+
 
 
 /*
@@ -41,9 +53,10 @@ inline static void CHK(BOOL bSuccess, s8 *pchMsg, TResourceClear func);
 
 static SOCK_FD Setup();
 static void Destroy();
-static void CloseFD(SOCK_FD fd);
-static void ChildTerminate(int nSigNo);
-static void ChildProcessHandle();          //子进程逻辑处理
-static void CloseConnectedFDs(std::set<SOCK_FD> &setFDs);
+static void CloseFD(s32 fd);
+static void ChildTerminate(int nSigNo);                             //SIGCHLD信号处理
+static void ChildProcessHandle();                                   //子进程逻辑处理
+static void CloseConnectedFDs(std::set<SOCK_FD> &setFDs);           //关闭所有的已连接套接字
+static void CreateShareMemory();                                    //创建共享内存
 
 #endif	//SERVER_H_

@@ -1,22 +1,18 @@
 #include "server.h"
 
-//typedef void (*TResourceClear)();
 
 static SOCK_FD nListenFD = FAILED;
-static pthread_mutex_t mutex;
 static fd_set rfds;
+static TShared *ptShared = NULL;
 
-
-static bool bAccepting = true;
 
 int main(int argc, char* argv[])
 {
     setbuf(stdout, NULL);
 
-    //init mutex
-    pthread_mutexattr_t mutexattr;
-    mutexattr.__align = PTHREAD_PROCESS_SHARED;
-    pthread_mutex_init(&mutex, &mutexattr);
+    //create share memory
+    CreateShareMemory();
+    CHK( (ptShared != NULL), "[Setup] create share memory failed! reason:%s", NULL);
 
     Setup();
 
@@ -33,18 +29,18 @@ int main(int argc, char* argv[])
     }
     CloseFD(nListenFD);//关闭父进程的监听FD，让子进程监听吧
 
-    usleep(100000);
+    usleep(10000);
     printf("Enter 'q' to quit!\n");
     s8 chInput = 'a';
     while (chInput != 'q') {
         chInput = (s8)getchar();
     }
-    
-    bAccepting = false;
-    wait(NULL);
-    wait(NULL);
-    
+    ptShared->bAccepting = false;
+
     Destroy();
+
+    LOG::LogHint("Nodify: server will terminate within 3 sec!");
+    sleep(3);
 
     return 1;
 
@@ -54,7 +50,7 @@ int main(int argc, char* argv[])
 SOCK_FD Setup()
 {
     nListenFD = socket(AF_INET, SOCK_STREAM, 0); 
-    CHK( (nListenFD > 0), "[Setup] create socket failed! reason:%s", Destroy);
+    CHK( (nListenFD != FAILED), "[Setup] create socket failed! reason:%s", Destroy);
 
     struct sockaddr_in server_addr;
     memset( &server_addr, 0, sizeof(struct sockaddr_in) );
@@ -63,10 +59,10 @@ SOCK_FD Setup()
     server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
     s32 nBindRtn = bind(nListenFD, (struct sockaddr*)&server_addr, sizeof(struct sockaddr_in));
-    CHK( (nBindRtn > 0), "[Setup] bind ip and port failed! reason:%s", Destroy);
+    CHK( (nBindRtn != FAILED), "[Setup] bind ip and port failed! reason:%s", Destroy);
 
     s32 nListenRtn = listen(nListenFD, MAX_BACKLOG);
-    CHK( (nListenRtn > 0), "[Setup] listen failed! reason:%s", Destroy);
+    CHK( (nListenRtn != FAILED), "[Setup] listen failed! reason:%s", Destroy);
 
     LOG::LogHint("server listen on %s : %d", SERVER_IP, LISTEN_PORT);
 
@@ -89,7 +85,7 @@ void ChildProcessHandle() {
     memset(&clientAddr, 0, sizeof(clientAddr));
     socklen_t tAddrLen = sizeof(struct sockaddr_in);
 
-    while (bAccepting) {
+    while (ptShared->bAccepting) {
         FD_ZERO(&rfds);
         FD_SET(nListenFD, &rfds);
 
@@ -105,10 +101,11 @@ void ChildProcessHandle() {
                     LOG::LogErr("[ChildProcessHandle] process_%d accept connection failed! reason:%s", getpid(), strerror(errno));
                 } else {
                     setConFDs.insert(nConnFD);
-                    LOG::LogHint("[ChildProcessHandle] process_%s:%d connected!", inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
+                    LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d connected!", getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
                 }
             }
         }
+        usleep(100000);
     }
 
     CloseFD(nListenFD);
@@ -129,7 +126,7 @@ void ChildTerminate(int nSigNo)
     }
 }
 
-void CloseFD(SOCK_FD fd) {
+void CloseFD(s32 fd) {
     if(-1 != fd) {
         close(fd);
     }
@@ -137,11 +134,12 @@ void CloseFD(SOCK_FD fd) {
 
 
 void Destroy() {
-    pthread_mutex_destroy(&mutex);
+    if (nListenFD > 0) {
+        CloseFD(nListenFD);
+    }
 
-    //if (nListenFD > 0) {
-        //CloseFD(nListenFD);
-    //}
+    munmap(ptShared, sizeof(TShared));
+    shm_unlink(SHM_NAME);
 }
 
 //关闭所有的已连接套接字
@@ -158,7 +156,35 @@ void CloseConnectedFDs(std::set<SOCK_FD> &setFDs) {
 void CHK(BOOL bSuccess, s8 *pchMsg, TResourceClear func) {
     if (!bSuccess) {
         LOG::LogErr(pchMsg, strerror(errno));
-        (*func)();
+        if (NULL != func) {
+            (*func)();
+        }
         exit(FAILED);
     }
 }
+
+//创建共享内存区
+void CreateShareMemory() {
+    int shm_fd = FAILED;
+    ptShared = NULL;
+
+    //create share memory
+    shm_unlink(SHM_NAME);
+    shm_fd = shm_open(SHM_NAME, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (shm_fd == FAILED) {
+        return;
+    }
+    ftruncate(shm_fd, sizeof(TShared));
+
+    //do memory mapping
+    ptShared = (TShared*)mmap(NULL, sizeof(TShared), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    CloseFD(shm_fd);
+    if (ptShared == MAP_FAILED) {
+        shm_unlink(SHM_NAME);
+        return;
+    }
+
+    //init shared memory
+    ptShared->bAccepting = TRUE;    
+}
+

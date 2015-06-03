@@ -8,9 +8,9 @@ OBJS=$(wildcard $(root_dir)/obj/*.o)
 
 CC=g++
 CFLAGS=-w -g
-
+CLINK=-lrt
 server:
-	$(CC) -o server $(CFLAGS) $(INCLUDE) $(OBJS)  server.cpp
+	$(CC) $(CLINK) -o server $(CFLAGS) $(INCLUDE) $(OBJS)  server.cpp
 
 
 clean:

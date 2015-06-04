@@ -33,6 +33,7 @@ typedef void (*TResourceClear)();
 
 typedef struct {
     BOOL bAccepting;
+    pthread_mutex_t mutex;
 }TShared;
 
 

@@ -100,11 +100,19 @@ void ChildProcessHandle() {
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 0;
-
+        
+        /**
+         * 对accept加锁的解释: 
+         * 内核维护已完成连接和未完成连接的队列，每次accept的时候,内核都从已完成
+         * 连接的队列中取出一个返回。因此，无论有多少个进程在等待accept,内核中并
+         * 不存在并发accept，所有进程都是共享内核中的accept操作，是需要相互竞争的。
+         */
         SOCK_FD nReadyNum = select(nListenFD+1, &rfds, NULL, NULL, &tv);
         if (nReadyNum > 0) {
             if (FD_ISSET(nListenFD, &rfds)) {
+                pthread_mutex_lock(&ptShared->mutex);
                 SOCK_FD nConnFD = accept(nListenFD, (sockaddr*)&clientAddr, &tAddrLen);
+                pthread_mutex_unlock(&ptShared->mutex);
                 if (nConnFD == FAILED) {
                     LOG::LogErr("[ChildProcessHandle] process_%d accept connection failed! reason:%s", getpid(), strerror(errno));
                 } else {
@@ -138,7 +146,8 @@ void Destroy() {
     if (nListenFD > 0) {
         close(nListenFD);
     }
-
+    
+    pthread_mutex_destroy(&ptShared->mutex);
     munmap(ptShared, sizeof(TShared));
     shm_unlink(SHM_NAME);
 }
@@ -187,5 +196,6 @@ void CreateShareMemory() {
 
     //init shared memory
     ptShared->bAccepting = TRUE;    
+    pthread_mutex_init(&ptShared->mutex, NULL);
 }
 

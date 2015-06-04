@@ -2,6 +2,7 @@
 #define SERVER_H_
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -53,7 +54,6 @@ inline static void CHK(BOOL bSuccess, s8 *pchMsg, TResourceClear func);
 
 static SOCK_FD Setup();
 static void Destroy();
-static void CloseFD(s32 fd);
 static void ChildTerminate(int nSigNo);                             //SIGCHLD信号处理
 static void ChildProcessHandle();                                   //子进程逻辑处理
 static void CloseConnectedFDs(std::set<SOCK_FD> &setFDs);           //关闭所有的已连接套接字

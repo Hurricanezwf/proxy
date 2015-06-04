@@ -27,30 +27,38 @@ int main(int argc, char* argv[])
             exit(0);
         }
     }
-    CloseFD(nListenFD);//关闭父进程的监听FD，让子进程监听吧
+    close(nListenFD);//关闭父进程的监听FD，让子进程监听吧
 
     usleep(10000);
     printf("Enter 'q' to quit!\n");
-    s8 chInput = 'a';
-    while (chInput != 'q') {
-        chInput = (s8)getchar();
+    s8 achInput[5] = "0";
+    while (0 != strcmp(achInput, "q\n")) {
+        fgets(achInput, sizeof(achInput), stdin);
     }
-    ptShared->bAccepting = false;
 
+    ptShared->bAccepting = false;
     Destroy();
 
-    LOG::LogHint("Nodify: server will terminate within 3 sec!");
-    sleep(3);
+    LOG::LogHint("Nodify: server stop!");
 
     return 1;
-
 }
 
 
 SOCK_FD Setup()
 {
     nListenFD = socket(AF_INET, SOCK_STREAM, 0); 
-    CHK( (nListenFD != FAILED), "[Setup] create socket failed! reason:%s", Destroy);
+    CHK( (nListenFD != FAILED), "[Setup] create socket failed! reason:%s", NULL);
+
+    //设置套接字选项
+    s32 nSetVal = 1;
+    s32 nSetRst = FAILED;
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEADDR, &nSetVal, sizeof(s32));
+    CHK( (FAILED != nSetRst), "[Setup] set reuseaddr failed! reason:%s", Destroy);
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEPORT, &nSetVal, sizeof(s32));
+    CHK( (FAILED != nSetRst), "[Setup] set reuseport failed! reason:%s", Destroy);
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_KEEPALIVE, &nSetVal, sizeof(s32));
+    CHK( (FAILED != nSetRst), "[Setup] set keepalive failed! reason:%s", Destroy);
 
     struct sockaddr_in server_addr;
     memset( &server_addr, 0, sizeof(struct sockaddr_in) );
@@ -79,7 +87,7 @@ void ChildProcessHandle() {
 
     //create a set to save connectd FD
     //-- Quesion:如果客户端断链了，服务器如何删除set中的FD?  --//
-    std::set<SOCK_FD> setConFDs;
+    //std::set<SOCK_FD> setConFDs;
 
     struct sockaddr_in clientAddr;
     memset(&clientAddr, 0, sizeof(clientAddr));
@@ -100,7 +108,7 @@ void ChildProcessHandle() {
                 if (nConnFD == FAILED) {
                     LOG::LogErr("[ChildProcessHandle] process_%d accept connection failed! reason:%s", getpid(), strerror(errno));
                 } else {
-                    setConFDs.insert(nConnFD);
+                    //accept成功时候，开启服务
                     LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d connected!", getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
                 }
             }
@@ -108,8 +116,8 @@ void ChildProcessHandle() {
         usleep(100000);
     }
 
-    CloseFD(nListenFD);
-    CloseConnectedFDs(setConFDs);
+    close(nListenFD);
+    //CloseConnectedFDs(setConFDs);
 }
 
 //子进程终止处理
@@ -117,7 +125,7 @@ void ChildTerminate(int nSigNo)
 {
     LOG::LogHint("[ChildTerminate] recv SIGCHLD!");
     pid_t pid = -1; 
-    while( 0 <= (pid = waitpid( -1, NULL, WNOHANG )) )
+    while( 0 < (pid = waitpid( -1, NULL, WNOHANG )) )
     {
         if( 0 < pid)
         {
@@ -126,16 +134,9 @@ void ChildTerminate(int nSigNo)
     }
 }
 
-void CloseFD(s32 fd) {
-    if(-1 != fd) {
-        close(fd);
-    }
-}
-
-
 void Destroy() {
     if (nListenFD > 0) {
-        CloseFD(nListenFD);
+        close(nListenFD);
     }
 
     munmap(ptShared, sizeof(TShared));
@@ -146,7 +147,7 @@ void Destroy() {
 void CloseConnectedFDs(std::set<SOCK_FD> &setFDs) {
     std::set<SOCK_FD>::iterator it = setFDs.begin();
     for (it; it != setFDs.end(); it++) {
-        CloseFD(*it);
+        close(*it);
     }
 
     setFDs.clear();
@@ -178,7 +179,7 @@ void CreateShareMemory() {
 
     //do memory mapping
     ptShared = (TShared*)mmap(NULL, sizeof(TShared), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    CloseFD(shm_fd);
+    close(shm_fd);
     if (ptShared == MAP_FAILED) {
         shm_unlink(SHM_NAME);
         return;

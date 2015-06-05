@@ -7,22 +7,12 @@ static TShared *ptShared = NULL;
 
 int main(int argc, char* argv[])
 {
-    setbuf(stdout, NULL);
-
-    //create share memory
-    CreateShareMemory();
-    CHK( (ptShared != NULL), "[Setup] create share memory failed! reason:%s", NULL);
-
-    Setup();
-
-    //setup signal for catching child process terminate
-    sighandler_t tSigRtn = signal(SIGCHLD, ChildTerminate);
-    CHK( (tSigRtn != SIG_ERR), "[Setup] setup SIGCHLD failed! reason:%s", Destroy);
+    server_init();
 
     //fork  child process to accept connect
     for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
         if (0 == fork()) {
-            InitChild(byIndex);
+            //InitChild(byIndex);
             ChildProcessHandle();
             exit(0);
         }
@@ -47,11 +37,11 @@ int main(int argc, char* argv[])
         }
     }
 
-    //ptShared->bAccepting = false; //用于非阻塞式select
-    for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
+    ptShared->bAccepting = false; //用于非阻塞式select
+    /*for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
         kill(ptShared->infos[byIndex].pid, SIGKILL);
         waitpid(ptShared->infos[byIndex].pid, NULL, 0);
-    } 
+    }*/
 
     Destroy();
     LOG::LogHint("Nodify: server stop!");
@@ -59,6 +49,20 @@ int main(int argc, char* argv[])
     return 1;
 }
 
+void server_init() {
+    //设置缓冲区无缓存
+    setbuf(stdout, NULL);
+
+    //create share memory
+    CreateShareMemory();
+    CHK( (ptShared != NULL), "[Setup] create share memory failed! reason:%s", NULL);
+
+    Setup();
+
+    //setup signal for catching child process terminate
+    sighandler_t tSigRtn = signal(SIGCHLD, ChildTerminate);
+    CHK( (tSigRtn != SIG_ERR), "[Setup] setup SIGCHLD failed! reason:%s", Destroy);
+}
 
 SOCK_FD Setup()
 {
@@ -104,45 +108,60 @@ void ChildProcessHandle() {
     LOG::LogHint("[ChildProcessHandle] Child process %d is running!", getpid()); 
     usleep(10000);
 
-    //create a set to save connectd FD
-    //-- Quesion:如果客户端断链了，服务器如何删除set中的FD?  --//
-    //std::set<SOCK_FD> setConFDs;
+    //客户端列表
+    std::list<SOCK_FD> clientList;
+
+    s32 nEpollHandle = epoll_create(MAX_EPOLL_SIZE);
+    CHK2( (FAILED != nEpollHandle), "[ChildProcessHandle] create epoll failed! reason:%s", ChildGabageClear, NULL);
+
+    struct epoll_event ev, events[MAX_EPOLL_SIZE];
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = nListenFD;
+
+    //注册对监听套接字的监测
+    s32 nRegRst = epoll_ctl(nEpollHandle, EPOLL_CTL_ADD, nListenFD, &ev);
+    CHK2( (FAILED != nRegRst), "[ChildProcessHandle] epoll regists listenFD faild! reason:%s", ChildGabageClear, NULL);
 
     struct sockaddr_in clientAddr;
     memset(&clientAddr, 0, sizeof(clientAddr));
     socklen_t tAddrLen = sizeof(struct sockaddr_in);
 
     while (ptShared->bAccepting) {
-        FD_ZERO(&rfds);
-        FD_SET(nListenFD, &rfds);
+        s32 nEventCount = epoll_wait(nEpollHandle, events, MAX_EPOLL_SIZE, 0);
+        CHK2( (FAILED != nEventCount), "[ChildProcessHandle] epoll_wait failed! reason:%s", ChildGabageClear, NULL);
 
-        s32 nMaxFD = nListenFD;
+        for (s32 nIndex = 0; nIndex < nEventCount; nIndex++) {
+            if (events[nIndex].data.fd == nListenFD) {
+                //监测到连接请求到来
+                SOCK_FD nClientFD = accept(nListenFD, (struct sockaddr*)&clientAddr, &tAddrLen);
+                CHK2( (FAILED != nClientFD), "[ChildProcessHandle] server accept failed! reason:%s", ChildGabageClear, (void*)&clientList);
 
-        /**
-         *   此处采用了阻塞式select，当nListenFD准备好后，所有子进程中的select
-         * 都会被唤醒[惊群效应]，然后通过FD_ISSET判断是哪个描述符就绪了，FD_ISSET
-         * 检验到特定的描述符就绪后,会将在相应的fd_set中将就绪的描述符进行FD_CLR,
-         * 从每次轮询的描述符集中踢除。这就是为什么对于同一个描述符，只要有一个进程
-         * 通过了FD_ISSET，其他的进程都通不过；这也是为什么，我们每次循环都需要重新
-         * FD_SET相应的文件描述符。
-         */
-        s32 nReadyNum = select(nMaxFD+1, &rfds, NULL, NULL, NULL);
-        if (nReadyNum > 0) {
-            if (FD_ISSET(nListenFD, &rfds)) {
-                SOCK_FD nConnFD = accept(nListenFD, (sockaddr*)&clientAddr, &tAddrLen);
-                if (nConnFD == FAILED) {
-                    printf("failed!\n");
-                    LOG::LogErr("[ChildProcessHandle] process_%d accept connection failed! reason:%s", getpid(), strerror(errno));
-                } else {
-                    //accept成功时候，开启服务
-                    LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d connected!", getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
-                }
+                clientList.push_back(nClientFD);
+
+                //设置非阻塞
+                fcntl(nClientFD, F_SETFL, O_NONBLOCK | fcntl(nClientFD, F_GETFL));
+
+                //注册进epoll
+                ev.events = EPOLLIN | EPOLLET;
+                ev.data.fd = nClientFD;
+                nRegRst = epoll_ctl(nEpollHandle, EPOLL_CTL_ADD, nClientFD, &ev);
+                CHK2( (FAILED != nRegRst), "[ChildProcessHandle] epoll regists ClientFD failed! reason:%s", ChildGabageClear, (void*)&clientList);
+
+                char wBuf[10] = "success!";
+                write(nClientFD, wBuf, sizeof(wBuf));
+
+                LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d connect success!",
+                        getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
+            } else {
+                //此处需要判断fd是否在客户端列表中
+                //do logic handle
+                LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d send some datas to me!",
+                        getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
             }
         }
     }
 
-    close(nListenFD);
-    //CloseConnectedFDs(setConFDs);
+    ChildGabageClear((void*)&clientList);
 }
 
 //子进程终止处理
@@ -166,14 +185,30 @@ void Destroy() {
     shm_unlink(SHM_NAME);
 }
 
-//关闭所有的已连接套接字
-void CloseConnectedFDs(std::set<SOCK_FD> &setFDs) {
-    std::set<SOCK_FD>::iterator it = setFDs.begin();
-    for (it; it != setFDs.end(); it++) {
-        close(*it);
+//子进程资源清理
+void ChildGabageClear(void *pList) {
+    if (nListenFD > 0) {
+        close(nListenFD);
     }
+   
+    if (NULL != pList) {
+        std::list<SOCK_FD> *pClientList = (std::list<SOCK_FD>*)pList;
+        CloseConnectedFDs(pClientList);
+    }
+}
 
-    setFDs.clear();
+//关闭所有的已连接套接字
+void CloseConnectedFDs(std::list<SOCK_FD> *pclientList) {
+    if (NULL != pclientList) {
+        std::list<SOCK_FD>::iterator it = pclientList->begin();
+        for (it; it != pclientList->end(); it++) {
+            if (*it > 0) {
+                close(*it);
+            }
+        }
+
+        pclientList->clear();
+    }
 }
 
 //返回值校验函数
@@ -186,6 +221,18 @@ void CHK(BOOL bSuccess, s8 *pchMsg, TResourceClear func) {
         exit(FAILED);
     }
 }
+
+//返回值校验函数
+void CHK2(BOOL bSuccess, s8 *pchMsg, void (*func)(void*), void *param) {
+   if (!bSuccess) {
+       LOG::LogErr(pchMsg, strerror(errno));
+       if (NULL != func) {
+        (*func)(param);
+       }
+       exit(FAILED);
+   } 
+}
+
 
 //创建共享内存区
 void CreateShareMemory() {

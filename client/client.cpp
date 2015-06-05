@@ -58,6 +58,11 @@ void Connect()
     } else {
         //connect成功并不能代表服务器接收了你的连接，有可能没进行accept操作，
         //这个需要服务器发消息来告诉你，连接是否成功
+
+        char rBuf[10] = "0";
+        read(nConFd, rBuf, sizeof(rBuf));
+        printf("%s\n", rBuf);
+
         LOG::LogHint("%d connect success!", getpid());
     }
 

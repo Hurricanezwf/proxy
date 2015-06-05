@@ -1,19 +1,48 @@
 #include "server.h"
 #include "base.h"
 #include "log.h"
+#include <fcntl.h>
+#include <assert.h>
+#include <signal.h>
+
+
+#define     CONNECT_NUM     1
+
+void Connect();
+void ChildTerminateProcess(int signo);
+
 
 int main(int argc, char* argv[])
 {
-	SOCK_FD nConFd = FAILED;
+    setbuf(stdout, NULL);
+    signal(SIGCHLD, ChildTerminateProcess);
 
-	nConFd = socket(AF_INET, SOCK_STREAM, 0);
+    for (int i = 0; i < CONNECT_NUM; i++) {
+        if (0 == fork()) {
+            Connect();
+        }
+        usleep(10000);
+    }
+
+    char input = 'a';
+    while (input != 'q') {
+        input = (char)getchar();
+    }
+
+	return 0;
+}
+
+
+void Connect()
+{
+    SOCK_FD nConFd = socket(AF_INET, SOCK_STREAM, 0);
 	if(FAILED == nConFd)
 	{
 		LOG::LogErr("create socket failed! reason=%s", strerror(errno));
-		exit(FAILED);
+        exit(FAILED);
 	}
 
-	struct sockaddr_in con_addr;
+    struct sockaddr_in con_addr;
 	socklen_t addr_len = sizeof(struct sockaddr_in);
 	memset( &con_addr, 0, addr_len );
 
@@ -24,23 +53,25 @@ int main(int argc, char* argv[])
 	if( FAILED == connect(nConFd, (struct sockaddr*)&con_addr, addr_len) )
 	{
 		LOG::LogErr("connect failed! reason=%s", strerror(errno));
-		close( nConFd );
-		exit(FAILED);
-	}
+        close(nConFd);
+        exit(FAILED);
+    } else {
+        //connect成功并不能代表服务器接收了你的连接，有可能没进行accept操作，
+        //这个需要服务器发消息来告诉你，连接是否成功
+        LOG::LogHint("%d connect success!", getpid());
+    }
 
-	s8 chWriteBuf[256] = {0};
-	printf("Enter:");
-	fgets( chWriteBuf, 256, stdin );
-	/*do{
-		write(nConFd, chWriteBuf, strlen(chWriteBuf)+1);
-		printf("Enter");
-		memset(chWriteBuf, 0, 256);
-		fgets( chWriteBuf, 256, stdin );
-	}while( 0 == strcmp(chWriteBuf,"quit") );
-	*/
-	//write(nConFd, chWriteBuf,strlen(chWriteBuf)+1);
+    sleep(10);
+    close(nConFd);
 
-	close( nConFd );
+    exit(0);
+}
 
-	return 0;
+void ChildTerminateProcess(int signo)
+{
+    signal(SIGCHLD, ChildTerminateProcess);
+    pid_t pid = -1;
+    while ((pid = waitpid(-1, NULL, WNOHANG)) > 0 ) {
+        LOG::LogHint("%d terminate!", pid);
+    }
 }

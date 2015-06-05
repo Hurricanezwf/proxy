@@ -5,7 +5,6 @@ static SOCK_FD nListenFD = FAILED;
 static fd_set rfds;
 static TShared *ptShared = NULL;
 
-
 int main(int argc, char* argv[])
 {
     setbuf(stdout, NULL);
@@ -20,9 +19,10 @@ int main(int argc, char* argv[])
     sighandler_t tSigRtn = signal(SIGCHLD, ChildTerminate);
     CHK( (tSigRtn != SIG_ERR), "[Setup] setup SIGCHLD failed! reason:%s", Destroy);
 
-    //fork 2 child process to accept connect
-    for (s8 chChildNum = 0; chChildNum < 2; chChildNum++) {
+    //fork  child process to accept connect
+    for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
         if (0 == fork()) {
+            InitChild(byIndex);
             ChildProcessHandle();
             exit(0);
         }
@@ -30,15 +30,30 @@ int main(int argc, char* argv[])
     close(nListenFD);//关闭父进程的监听FD，让子进程监听吧
 
     usleep(10000);
-    printf("Enter 'q' to quit!\n");
-    s8 achInput[5] = "0";
-    while (0 != strcmp(achInput, "q\n")) {
+   
+    s8 achInput[10] = "0";
+    while (TRUE) {
+        printf("Enter:");
         fgets(achInput, sizeof(achInput), stdin);
+        
+        if (0 == strcmp(achInput, "q\n") ) {
+            break;
+        } else if (0 == strcmp(achInput, "sc\n")) {
+            ShowChildConnInfo();
+        } else if (0 == strcmp(achInput, "help\n")) {
+            ShowHelp();
+        } else {
+            LOG::LogErr("unknown command!");
+        }
     }
 
-    ptShared->bAccepting = false;
-    Destroy();
+    //ptShared->bAccepting = false; //用于非阻塞式select
+    for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
+        kill(ptShared->infos[byIndex].pid, SIGKILL);
+        waitpid(ptShared->infos[byIndex].pid, NULL, 0);
+    } 
 
+    Destroy();
     LOG::LogHint("Nodify: server stop!");
 
     return 1;
@@ -53,12 +68,16 @@ SOCK_FD Setup()
     //设置套接字选项
     s32 nSetVal = 1;
     s32 nSetRst = FAILED;
-    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEADDR, &nSetVal, sizeof(s32));
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEADDR, &nSetVal, sizeof(s32));   //ip地址复用
     CHK( (FAILED != nSetRst), "[Setup] set reuseaddr failed! reason:%s", Destroy);
-    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEPORT, &nSetVal, sizeof(s32));
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_REUSEPORT, &nSetVal, sizeof(s32));   //端口复用
     CHK( (FAILED != nSetRst), "[Setup] set reuseport failed! reason:%s", Destroy);
-    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_KEEPALIVE, &nSetVal, sizeof(s32));
+    nSetRst = setsockopt(nListenFD, SOL_SOCKET, SO_KEEPALIVE, &nSetVal, sizeof(s32));   //保活
     CHK( (FAILED != nSetRst), "[Setup] set keepalive failed! reason:%s", Destroy);
+    
+    //设置套接字为非阻塞
+    nSetRst = fcntl(nListenFD, F_SETFL, O_NONBLOCK | fcntl(nListenFD, F_GETFL));
+    CHK( (FAILED != nSetRst), "[Setup] set sockfd NONBLOCK failed! reason:%s", Destroy);
 
     struct sockaddr_in server_addr;
     memset( &server_addr, 0, sizeof(struct sockaddr_in) );
@@ -80,7 +99,7 @@ SOCK_FD Setup()
 
 
 // 此处子进程copy了父进程的nListenFD，有几个子进程就copy了几次，注意在子进程结束后释放
-// 此处暂未实现accept的负载均衡，暂时先用锁
+// 此处暂未实现accept的负载均衡
 void ChildProcessHandle() {
     LOG::LogHint("[ChildProcessHandle] Child process %d is running!", getpid()); 
     usleep(10000);
@@ -97,23 +116,22 @@ void ChildProcessHandle() {
         FD_ZERO(&rfds);
         FD_SET(nListenFD, &rfds);
 
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        
+        s32 nMaxFD = nListenFD;
+
         /**
-         * 对accept加锁的解释: 
-         * 内核维护已完成连接和未完成连接的队列，每次accept的时候,内核都从已完成
-         * 连接的队列中取出一个返回。因此，无论有多少个进程在等待accept,内核中并
-         * 不存在并发accept，所有进程都是共享内核中的accept操作，是需要相互竞争的。
+         *   此处采用了阻塞式select，当nListenFD准备好后，所有子进程中的select
+         * 都会被唤醒[惊群效应]，然后通过FD_ISSET判断是哪个描述符就绪了，FD_ISSET
+         * 检验到特定的描述符就绪后,会将在相应的fd_set中将就绪的描述符进行FD_CLR,
+         * 从每次轮询的描述符集中踢除。这就是为什么对于同一个描述符，只要有一个进程
+         * 通过了FD_ISSET，其他的进程都通不过；这也是为什么，我们每次循环都需要重新
+         * FD_SET相应的文件描述符。
          */
-        SOCK_FD nReadyNum = select(nListenFD+1, &rfds, NULL, NULL, &tv);
+        s32 nReadyNum = select(nMaxFD+1, &rfds, NULL, NULL, NULL);
         if (nReadyNum > 0) {
             if (FD_ISSET(nListenFD, &rfds)) {
-                pthread_mutex_lock(&ptShared->mutex);
                 SOCK_FD nConnFD = accept(nListenFD, (sockaddr*)&clientAddr, &tAddrLen);
-                pthread_mutex_unlock(&ptShared->mutex);
                 if (nConnFD == FAILED) {
+                    printf("failed!\n");
                     LOG::LogErr("[ChildProcessHandle] process_%d accept connection failed! reason:%s", getpid(), strerror(errno));
                 } else {
                     //accept成功时候，开启服务
@@ -121,7 +139,6 @@ void ChildProcessHandle() {
                 }
             }
         }
-        usleep(100000);
     }
 
     close(nListenFD);
@@ -135,10 +152,7 @@ void ChildTerminate(int nSigNo)
     pid_t pid = -1; 
     while( 0 < (pid = waitpid( -1, NULL, WNOHANG )) )
     {
-        if( 0 < pid)
-        {
-            LOG::LogHint("[ChildTerminate] child:%d terminate!", pid);
-        }
+        LOG::LogHint("[ChildTerminate] child:%d terminate!", pid);
     }
 }
 
@@ -197,5 +211,35 @@ void CreateShareMemory() {
     //init shared memory
     ptShared->bAccepting = TRUE;    
     pthread_mutex_init(&ptShared->mutex, NULL);
+    //ptShared->pids.clear();
 }
 
+//初始化子进程
+void InitChild(u8 byIndex) {
+    //初始化进程连接信息
+    ptShared->infos[byIndex].pid = getpid();
+    ptShared->infos[byIndex].nMaxConnNum = MAX_BACKLOG / MAX_CHILD_NUM;
+    ptShared->infos[byIndex].nLeftConnNum = 0;
+}
+
+
+//显示所有子进程的连接信息
+void ShowChildConnInfo() {
+    LOG::LogHint("---------- Child Process Connection Info ------------");
+    for (u8 byIndex = 0; byIndex < MAX_CHILD_NUM; byIndex++) {
+        LOG::LogHint("pid=%d, nMaxConnNum=%d, nLeftConnNum=%d", 
+                ptShared->infos[byIndex].pid,
+                ptShared->infos[byIndex].nMaxConnNum,
+                ptShared->infos[byIndex].nLeftConnNum);
+    }
+    LOG::LogHint("-----------------------------------------------------");
+}
+
+
+//显示调试命令的帮助信息
+void ShowHelp() {
+    LOG::LogHint("------------ Debug Help ----------");
+    LOG::LogHint("\'q\'   -- quit!");
+    LOG::LogHint("\"sc\"  -- Show Child Process Connection Info!");
+    LOG::LogHint("---------------------------------");
+}

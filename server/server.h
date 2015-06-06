@@ -86,6 +86,7 @@ static void InitChild(u8 byIndex);                                              
 //static s32  FindClientFromList(std::list<SOCK_FD> &clientList, SOCK_FD fd);     //从list中查找制定的fd
 static pid_t FindMostIdleChild();                                               //查找最闲的子进程
 
+
 //调试信息打印
 static void ShowChildConnInfo();                                    //显示所有子进程的连接信息
 static void ShowHelp();                                             //显示调试命令的帮助信息

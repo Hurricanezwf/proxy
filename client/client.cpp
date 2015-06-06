@@ -6,7 +6,7 @@
 #include <signal.h>
 
 
-#define     CONNECT_NUM     1
+#define     CONNECT_NUM     19
 
 void Connect();
 void ChildTerminateProcess(int signo);
@@ -20,15 +20,19 @@ int main(int argc, char* argv[])
     for (int i = 0; i < CONNECT_NUM; i++) {
         if (0 == fork()) {
             Connect();
+        } else {
+            //usleep(100000);
         }
-        usleep(10000);
     }
 
-    char input = 'a';
-    while (input != 'q') {
-        input = (char)getchar();
+    char chInput[10] = "0";
+    while (!strcmp("chInput", "q\n")) {
+        fgets(chInput, sizeof(chInput), stdout);
     }
 
+    for (int i = 0; i < CONNECT_NUM; i++) {
+        wait(NULL);
+    }
 	return 0;
 }
 

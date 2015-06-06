@@ -29,20 +29,32 @@
 #define     SHM_NAME        "/shm_zwf"
 
 #define     MAX_CHILD_NUM   2
-#define     MAX_EPOLL_SIZE  15 
+#define     MAX_EPOLL_SIZE  5
 
 typedef void (*TResourceClear)();
 typedef void (*ChildClear)(std::list<SOCK_FD> *pList);
 
-typedef struct {
+typedef struct tagConnectionInfo{
     pid_t   pid;                //所属进程号
     s32     nMaxConnNum;        //最大连接数量
     s32     nLeftConnNum;       //剩余连接数量
+
+    tagConnectionInfo() {
+        pid = -1;
+        nMaxConnNum = -1;
+        nLeftConnNum = -1;
+    }
 }TConnectionInfo;
+
+
+typedef struct {
+    pid_t mutex_owner;                  //锁的属主
+    pthread_mutex_t accept_mutex;       //accept锁
+}TAcceptLock;
 
 typedef struct {
     BOOL bAccepting;                    //控制子进程接收连接的控制位
-    pthread_mutex_t mutex;
+    TAcceptLock tAcceptMutex;
     TConnectionInfo infos[MAX_CHILD_NUM];
 }TShared;
 
@@ -71,8 +83,8 @@ static void ChildGabageClear(void *pList);                                      
 static void CloseConnectedFDs(std::list<SOCK_FD> *pclientList);                 //关闭所有的已连接套接字
 static void CreateShareMemory();                                                //创建共享内存
 static void InitChild(u8 byIndex);                                              //初始化指定的子进程
-static s32  FindClientFromList(std::list<SOCK_FD> &clientList, SOCK_FD fd);     //从list中查找制定的fd
-
+//static s32  FindClientFromList(std::list<SOCK_FD> &clientList, SOCK_FD fd);     //从list中查找制定的fd
+static pid_t FindMostIdleChild();                                               //查找最闲的子进程
 
 //调试信息打印
 static void ShowChildConnInfo();                                    //显示所有子进程的连接信息

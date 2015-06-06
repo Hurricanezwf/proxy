@@ -116,26 +116,46 @@ void ChildProcessHandle(u8 byIndex) {
     CHK2( (FAILED != nEpollHandle), "[ChildProcessHandle] create epoll failed! reason:%s", ChildGabageClear, NULL);
 
     struct epoll_event ev, events[MAX_EPOLL_SIZE];
-    ev.events = EPOLLIN | EPOLLET;
-    ev.data.fd = nListenFD;
+    s32 nRegRst = FAILED;
+    //ev.events = EPOLLIN | EPOLLET;
+    //ev.data.fd = nListenFD;
 
     //注册对监听套接字的监测
-    s32 nRegRst = epoll_ctl(nEpollHandle, EPOLL_CTL_ADD, nListenFD, &ev);
-    CHK2( (FAILED != nRegRst), "[ChildProcessHandle] epoll regists listenFD faild! reason:%s", ChildGabageClear, NULL);
+    //nRegRst = epoll_ctl(nEpollHandle, EPOLL_CTL_ADD, nListenFD, &ev);
+    //CHK2( (FAILED != nRegRst), "[ChildProcessHandle] epoll regists listenFD faild! reason:%s", ChildGabageClear, (void*)&clientList);
 
     struct sockaddr_in clientAddr;
     memset(&clientAddr, 0, sizeof(clientAddr));
     socklen_t tAddrLen = sizeof(struct sockaddr_in);
 
     while (ptShared->bAccepting) {
+        if ((getpid() == FindMostIdleChild()) && (0 == pthread_mutex_trylock(&ptShared->tAcceptMutex.accept_mutex))) {
+            ptShared->tAcceptMutex.mutex_owner = getpid();
+
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = nListenFD;
+
+            //注册对监听套接字的监测
+            nRegRst = epoll_ctl(nEpollHandle, EPOLL_CTL_ADD, nListenFD, &ev);
+            CHK2( (FAILED != nRegRst), "[ChildProcessHandle] epoll regists listenFD faild! reason:%s", ChildGabageClear, (void*)&clientList);
+        }
+
         s32 nEventCount = epoll_wait(nEpollHandle, events, MAX_EPOLL_SIZE, 0);
-        CHK2( (FAILED != nEventCount), "[ChildProcessHandle] epoll_wait failed! reason:%s", ChildGabageClear, NULL);
+        CHK2( (FAILED != nEventCount), "[ChildProcessHandle] epoll_wait failed! reason:%s", ChildGabageClear, (void*)&clientList);
 
         for (s32 nIndex = 0; nIndex < nEventCount; nIndex++) {
             if (events[nIndex].data.fd == nListenFD) {
+                //移除监听注册
+                epoll_ctl(nEpollHandle, EPOLL_CTL_DEL, nListenFD, &ev);
+                pthread_mutex_unlock(&ptShared->tAcceptMutex.accept_mutex);                
+
                 //监测到连接请求到来
-                SOCK_FD nClientFD = accept(nListenFD, (struct sockaddr*)&clientAddr, &tAddrLen);
-                CHK2( (FAILED != nClientFD), "[ChildProcessHandle] server accept failed! reason:%s", ChildGabageClear, (void*)&clientList);
+                SOCK_FD nClientFD;
+                
+                while ((ptShared->infos[byProIdx].nLeftConnNum > 0)
+                        && (nClientFD = accept(nListenFD, (struct sockaddr*)&clientAddr, &tAddrLen)) != FAILED )
+                {
+                //CHK2( (FAILED != nClientFD), "[ChildProcessHandle] server accept failed! reason:%s", ChildGabageClear, (void*)&clientList);
 
                 clientList.push_back(nClientFD);
                 ptShared->infos[byProIdx].nLeftConnNum--;
@@ -154,15 +174,18 @@ void ChildProcessHandle(u8 byIndex) {
 
                 LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d connect success!",
                         getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port);
+                }
             } else {
-                //do logic handle
-                ptShared->infos[byProIdx].nLeftConnNum++;
+               //do logic handle
 
-                char rBuf[128] = "0";
-                read(events[nIndex].data.fd, rBuf, sizeof(rBuf));
-                
-                LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d send some datas to me! content:%s",
-                        getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port, rBuf);
+               char rBuf[128] = "0";
+               s32 nSize = read(events[nIndex].data.fd, rBuf, sizeof(rBuf));
+               if (nSize == 0) {
+                   ptShared->infos[byProIdx].nLeftConnNum++;
+               } 
+
+               LOG::LogHint("[ChildProcessHandle] process_%d says: %s:%d send some datas to me! content:%d",
+                        getpid(), inet_ntoa(clientAddr.sin_addr), clientAddr.sin_port, nSize);
             }
         }
     }
@@ -186,20 +209,36 @@ void Destroy() {
         close(nListenFD);
     }
     
-    pthread_mutex_destroy(&ptShared->mutex);
+    pthread_mutex_destroy(&ptShared->tAcceptMutex.accept_mutex);
     munmap(ptShared, sizeof(TShared));
     shm_unlink(SHM_NAME);
 }
 
 //子进程资源清理
 void ChildGabageClear(void *pList) {
+    //关闭监听
     if (nListenFD > 0) {
         close(nListenFD);
     }
    
+    //关闭所有连接
     if (NULL != pList) {
         std::list<SOCK_FD> *pClientList = (std::list<SOCK_FD>*)pList;
         CloseConnectedFDs(pClientList);
+    }
+
+    //释放该进程加的互斥锁
+    if (ptShared->tAcceptMutex.mutex_owner == getpid()) {
+        pthread_mutex_unlock(&ptShared->tAcceptMutex.accept_mutex);
+    }
+
+    //清理保存的负载信息
+    for (u8 byIdx = 0; byIdx < MAX_CHILD_NUM; byIdx++) {
+        if (ptShared->infos[byIdx].pid == getpid()) {
+            ptShared->infos[byIdx].pid = -1;
+            ptShared->infos[byIdx].nMaxConnNum = -1;
+            ptShared->infos[byIdx].nLeftConnNum = -1;
+        }
     }
 }
 
@@ -262,9 +301,9 @@ void CreateShareMemory() {
     }
 
     //init shared memory
-    ptShared->bAccepting = TRUE;    
-    pthread_mutex_init(&ptShared->mutex, NULL);
-    //ptShared->pids.clear();
+    ptShared->bAccepting = TRUE;
+    ptShared->tAcceptMutex.mutex_owner = -1;
+    pthread_mutex_init(&ptShared->tAcceptMutex.accept_mutex, NULL);
 }
 
 //初始化子进程
@@ -275,6 +314,21 @@ void InitChild(u8 byIndex) {
     ptShared->infos[byIndex].nLeftConnNum = ptShared->infos[byIndex].nMaxConnNum;
 }
 
+//查找最空闲的子进程
+pid_t FindMostIdleChild() {
+    pid_t target = -1;
+    s32 nLeftConnNum = 0;
+
+    for (u8 byIdx = 0; byIdx < MAX_CHILD_NUM; byIdx++) {
+        s32 nLeft = ptShared->infos[byIdx].nLeftConnNum;
+        if (nLeft > nLeftConnNum) {
+            nLeftConnNum = ptShared->infos[byIdx].nLeftConnNum;
+            target = ptShared->infos[byIdx].pid;
+        }    
+    }
+
+    return target;
+}
 
 //显示所有子进程的连接信息
 void ShowChildConnInfo() {

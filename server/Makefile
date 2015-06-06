@@ -8,7 +8,7 @@ OBJS=$(wildcard $(root_dir)/obj/*.o)
 
 CC=g++
 CFLAGS=-w -g
-CLINK=-lrt
+CLINK=-lrt -pthread
 server:
 	$(CC) $(CLINK) -o server $(CFLAGS) $(INCLUDE) $(OBJS)  server.cpp
 
